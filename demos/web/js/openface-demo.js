@@ -51,13 +51,70 @@ function registerHbarsHelpers() {
     });
 }
 
+function startCapture() {
+    var name = $("#name").val();
+    if (name == "") {
+        alert("Please input your name");
+        return;
+    }
+
+    if (navigator.getUserMedia) {
+         var videoSelector = {video : true};
+         navigator.getUserMedia(videoSelector, videoSucess, function() {
+             alert("Error fetching video from webcam");
+         });
+     } else {
+         alert("No webcam detected.");
+     }
+}
+
+function stopCapture() {
+    vid.pause();
+
+    if (vid.mozCaptureStream) {
+        vid.mozSrcObject = null;
+    } else {
+        vid.src = "" || null;
+    }
+
+    if (localStream) {
+        if (localStream.getVideoTracks) {
+            // get video track to call stop on it
+            var tracks = localStream.getVideoTracks();
+            if (tracks && tracks[0] && tracks[0].stop) tracks[0].stop();
+        }
+        else if (localStream.stop) {
+            // deprecated, may be removed in future
+            localStream.stop();
+        }
+        localStream = null;
+    }
+
+    vidReady = false;
+}
+
+function videoSucess(stream) {
+    if (vid.mozCaptureStream) {
+        vid.mozSrcObject = stream;
+    } else {
+        vid.src = (window.URL && window.URL.createObjectURL(stream)) ||
+            stream;
+    }
+    localStream = stream;
+    vid.play();
+    vidReady = true;
+    setTimeout(function() {requestAnimFrame(sendFrameLoop)}, 1000);
+}
+
+
 function sendFrameLoop() {
     if (socket == null || socket.readyState != socket.OPEN ||
-        !vidReady || numNulls != defaultNumNulls) {
+        !vidReady) {
         return;
     }
 
     if (tok > 0) {
+        console.log("starting to send frame message")
         var canvas = document.createElement('canvas');
         canvas.width = vid.width;
         canvas.height = vid.height;
@@ -70,87 +127,135 @@ function sendFrameLoop() {
         var msg = {
             'type': 'FRAME',
             'dataURL': dataURL,
-            'identity': defaultPerson
+            'name': $("#name").val()
         };
         socket.send(JSON.stringify(msg));
         tok--;
     }
-    setTimeout(function() {requestAnimFrame(sendFrameLoop)}, 250);
+    setTimeout(function() {requestAnimFrame(sendFrameLoop)}, 500);
+}
+
+function startTrain() {
+    var msg = {
+        'type': 'TRAIN'
+    };
+    socket.send(JSON.stringify(msg));
+    $("#trainStatus").html("Training is ongoing...");
+}
+
+function startTest() {
+    var name = $("#testName").val();
+    if (name == "") {
+        alert("Please input your name");
+        return;
+    }
+
+    $("#testStatus").html("Test is starting...");
+
+    var msg = {
+        'type': 'TEST'
+    };
+    socket.send(JSON.stringify(msg));
+}
+
+function stopTest() {
+    $("#testStatus").html("Test is stopping...");
+    stopTestCapture();
+    var msg = {
+        'type': 'STOP_TEST'
+    };
+    socket.send(JSON.stringify(msg));
+}
+
+function startTestCapture() {
+    $("#testStatus").html("Test is ongoing...");
+    if (navigator.getUserMedia) {
+         var videoSelector = {video : true};
+         navigator.getUserMedia(videoSelector, testVideoSucess, function() {
+             alert("Error fetching video from webcam");
+         });
+     } else {
+         alert("No webcam detected.");
+     }
+}
+
+function stopTestCapture() {
+    testVid.pause();
+
+    if (testVid.mozCaptureStream) {
+        testVid.mozSrcObject = null;
+    } else {
+        testVid.src = "" || null;
+    }
+
+    if (testLocalStream) {
+        if (testLocalStream.getVideoTracks) {
+            // get video track to call stop on it
+            var tracks = testLocalStream.getVideoTracks();
+            if (tracks && tracks[0] && tracks[0].stop) tracks[0].stop();
+        }
+        else if (testLocalStream.stop) {
+            // deprecated, may be removed in future
+            testLocalStream.stop();
+        }
+        testLocalStream = null;
+    }
+
+    testVidReady = false;
+}
+
+function testVideoSucess(stream) {
+    if (testVid.mozCaptureStream) {
+        testVid.mozSrcObject = stream;
+    } else {
+        testVid.src = (window.URL && window.URL.createObjectURL(stream)) ||
+            stream;
+    }
+    testLocalStream = stream;
+    testVid.play();
+    testVidReady = true;
+    setTimeout(function() {requestAnimFrame(sendTestFrameLoop)}, 1000);
 }
 
 
-function getPeopleInfoHtml() {
-    var info = {'-1': 0};
-    var len = people.length;
-    for (var i = 0; i < len; i++) {
-        info[i] = 0;
+function sendTestFrameLoop() {
+    if (socket == null || socket.readyState != socket.OPEN ||
+        !testVidReady) {
+        return;
     }
 
-    var len = images.length;
-    for (var i = 0; i < len; i++) {
-        id = images[i].identity;
-        info[id] += 1;
-    }
+    if (testTok > 0) {
+        var canvas = document.createElement('canvas');
+        canvas.width = testVid.width;
+        canvas.height = testVid.height;
+        var cc = canvas.getContext('2d');
+        cc.drawImage(testVid, 0, 0, testVid.width, testVid.height);
+        var apx = cc.getImageData(0, 0, testVid.width, testVid.height);
 
-    var h = "<li><b>Unknown:</b> "+info['-1']+"</li>";
-    var len = people.length;
-    for (var i = 0; i < len; i++) {
-        h += "<li><b>"+people[i]+":</b> "+info[i]+"</li>";
+        var dataURL = canvas.toDataURL('image/jpeg', 0.6)
+
+        var msg = {
+            'type': 'TEST_FRAME',
+            'dataURL': dataURL,
+            'name': $("#testName").val()
+        };
+        socket.send(JSON.stringify(msg));
+        testTok--;
     }
-    return h;
+    setTimeout(function() {requestAnimFrame(sendTestFrameLoop)}, 500);
+}
+
+function startStat() {
+    $("#statistic").html("statistic is ongoing...");
+    var msg = {
+        'type': 'STAT'
+    };
+    socket.send(JSON.stringify(msg));
 }
 
 function redrawPeople() {
-    var context = {people: people, images: images};
-    $("#peopleTable").html(peopleTableTmpl(context));
-
-    var context = {people: people};
-    $("#defaultPersonDropdown").html(defaultPersonTmpl(context));
-
-    $("#peopleInfo").html(getPeopleInfoHtml());
-}
-
-function getDataURLFromRGB(rgb) {
-    var rgbLen = rgb.length;
-
-    var canvas = $('<canvas/>').width(96).height(96)[0];
-    var ctx = canvas.getContext("2d");
-    var imageData = ctx.createImageData(96, 96);
-    var data = imageData.data;
-    var dLen = data.length;
-    var i = 0, t = 0;
-
-    for (; i < dLen; i +=4) {
-        data[i] = rgb[t+2];
-        data[i+1] = rgb[t+1];
-        data[i+2] = rgb[t];
-        data[i+3] = 255;
-        t += 3;
-    }
-    ctx.putImageData(imageData, 0, 0);
-
-    return canvas.toDataURL("image/png");
-}
-
-function updateRTT() {
-    var diffs = [];
-    for (var i = 5; i < defaultNumNulls; i++) {
-        diffs.push(receivedTimes[i] - sentTimes[i]);
-    }
-    $("#rtt-"+socketName).html(
-        jStat.mean(diffs).toFixed(2) + " ms (σ = " +
-            jStat.stdev(diffs).toFixed(2) + ")"
-    );
-}
-
-function sendState() {
-    var msg = {
-        'type': 'ALL_STATE',
-        'images': images,
-        'people': people,
-        'training': training
-    };
-    socket.send(JSON.stringify(msg));
+    var context = {images: images};
+    $("#peopleTd").html(peopleTableTmpl(context));
 }
 
 function createSocket(address, name) {
@@ -159,64 +264,67 @@ function createSocket(address, name) {
     socket.binaryType = "arraybuffer";
     socket.onopen = function() {
         $("#serverStatus").html("Connected to " + name);
-        sentTimes = [];
-        receivedTimes = [];
-        tok = defaultTok;
-        numNulls = 0
-
-        socket.send(JSON.stringify({'type': 'NULL'}));
-        sentTimes.push(new Date());
-    }
+    };
     socket.onmessage = function(e) {
         console.log(e);
-        j = JSON.parse(e.data)
-        if (j.type == "NULL") {
-            receivedTimes.push(new Date());
-            numNulls++;
-            if (numNulls == defaultNumNulls) {
-                updateRTT();
-                sendState();
-                sendFrameLoop();
+        j = JSON.parse(e.data);
+        if (j.type == "TRAINED") {
+            if (j.status == "ok") {
+                $("#trainStatus").html("<span style='color: green'>Training is done successfully!</span>");
             } else {
-                socket.send(JSON.stringify({'type': 'NULL'}));
-                sentTimes.push(new Date());
+                $("#trainStatus").html("<span style='color: red'>Training is failed!</span>");
             }
         } else if (j.type == "PROCESSED") {
             tok++;
         } else if (j.type == "NEW_IMAGE") {
             images.push({
-                hash: j.hash,
-                identity: j.identity,
-                image: getDataURLFromRGB(j.content),
-                representation: j.representation
+                name: j.name,
+                image: j.path
             });
             redrawPeople();
-        } else if (j.type == "IDENTITIES") {
-            var h = "Last updated: " + (new Date()).toTimeString();
-            h += "<ul>";
-            var len = j.identities.length
-            if (len > 0) {
-                for (var i = 0; i < len; i++) {
-                    var identity = "Unknown";
-                    var idIdx = j.identities[i];
-                    if (idIdx != -1) {
-                        identity = people[idIdx];
-                    }
-                    h += "<li>" + identity + "</li>";
-                }
+        } else if (j.type == "TEST_STARTED") {
+            startTestCapture();
+        } else if (j.type == "TEST_PROCESSED") {
+            testTok++;
+        } else if (j.type == "TEST_STOPPED") {
+            $("#testStatus").html("Test is stopped.");
+        } else if (j.type == "NEW_TEST_IMAGE") {
+
+            var outHtml = '<h4>Test Result:</h4>' +
+                '<span style="font-weight: bold">Actual Name: </span><span>' + j.actual_name + '</span><br>';
+            if (j.actual_name == j.predict_name) {
+                outHtml += '<span style="font-weight: bold">Predict Name: </span><span style="color:green">' + j.predict_name + '</span><br>';
             } else {
-                h += "<li>Nobody detected.</li>";
+                outHtml += '<span style="font-weight: bold">Predict Name: </span><span style="color:red">' + j.predict_name + '</span><br>';
             }
-            h += "</ul>"
-            $("#peopleInVideo").html(h);
-        } else if (j.type == "ANNOTATED") {
-            $("#detectedFaces").html(
-                "<img src='" + j['content'] + "' width='430px'></img>"
-            )
-        } else if (j.type == "TSNE_DATA") {
-            BootstrapDialog.show({
-                message: "<img src='" + j['content'] + "' width='100%'></img>"
-            });
+            if (j.confidence == "unknown") {
+                outHtml += '<span style="font-weight: bold">Predict Confidence: </span><span style="color:red">' + j.confidence + '</span><br>';
+            } else {
+                outHtml += '<span style="font-weight: bold">Predict Confidence: </span><span>' + j.confidence + '</span><br>';
+            }
+            if (j.predict_result == "predict is correct") {
+                outHtml += '<span style="font-weight: bold">Predict Result: </span><span style="color:green">' + j.predict_result + '</span>';
+            } else {
+                outHtml += '<span style="font-weight: bold">Predict Result: </span><span style="color:red">' + j.predict_result + '</span>';
+            }
+
+            $("#testResult").html(outHtml);
+
+        } else if (j.type == "STATED") {
+            $("#statStatus").html("<span style='color:green'>Statistic is done successfully!</span>");
+
+            var result = j.statResult;
+            var outHtml = "";
+            for (var key in result) {
+                outHtml += "<tr>" +
+                                "<td>" + key + "</td>" +
+                                "<td>" + result[key].total + "</td>" +
+                                "<td>" + result[key].success + "</td>" +
+                                "<td>" + result[key].error + "</td>" +
+                                "<td>" + (result[key].success / result[key].total) + "</td>" +
+                            "</tr>"
+            }
+            $("#statBody").html(outHtml);
         } else {
             console.log("Unrecognized message type: " + j.type);
         }
@@ -229,127 +337,5 @@ function createSocket(address, name) {
         if (e.target == socket) {
             $("#serverStatus").html("Disconnected.");
         }
-    }
-}
-
-function umSuccess(stream) {
-    if (vid.mozCaptureStream) {
-        vid.mozSrcObject = stream;
-    } else {
-        vid.src = (window.URL && window.URL.createObjectURL(stream)) ||
-            stream;
-    }
-    vid.play();
-    vidReady = true;
-    sendFrameLoop();
-}
-
-function addPersonCallback(el) {
-    defaultPerson = people.length;
-    var newPerson = $("#addPersonTxt").val();
-    if (newPerson == "") return;
-    people.push(newPerson);
-    $("#addPersonTxt").val("");
-
-    if (socket != null) {
-        var msg = {
-            'type': 'ADD_PERSON',
-            'val': newPerson
-        };
-        socket.send(JSON.stringify(msg));
-    }
-    redrawPeople();
-}
-
-function trainingChkCallback() {
-    training = $("#trainingChk").prop('checked');
-    if (training) {
-        makeTabActive("tab-preview");
-    } else {
-        makeTabActive("tab-annotated");
-    }
-    if (socket != null) {
-        var msg = {
-            'type': 'TRAINING',
-            'val': training
-        };
-        socket.send(JSON.stringify(msg));
-    }
-}
-
-function viewTSNECallback(el) {
-    if (socket != null) {
-        var msg = {
-            'type': 'REQ_TSNE',
-            'people': people
-        };
-        socket.send(JSON.stringify(msg));
-    }
-}
-
-function findImageByHash(hash) {
-    var imgIdx = 0;
-    var len = images.length;
-    for (imgIdx = 0; imgIdx < len; imgIdx++) {
-        if (images[imgIdx].hash == hash) {
-            console.log("  + Image found.");
-            return imgIdx;
-        }
-    }
-    return -1;
-}
-
-function updateIdentity(hash, idx) {
-    var imgIdx = findImageByHash(hash);
-    if (imgIdx >= 0) {
-        images[imgIdx].identity = idx;
-        var msg = {
-            'type': 'UPDATE_IDENTITY',
-            'hash': hash,
-            'idx': idx
-        };
-        socket.send(JSON.stringify(msg));
-    }
-}
-
-function removeImage(hash) {
-    console.log("Removing " + hash);
-    var imgIdx = findImageByHash(hash);
-    if (imgIdx >= 0) {
-        images.splice(imgIdx, 1);
-        redrawPeople();
-        var msg = {
-            'type': 'REMOVE_IMAGE',
-            'hash': hash
-        };
-        socket.send(JSON.stringify(msg));
-    }
-}
-
-function changeServerCallback() {
-    $(this).addClass("active").siblings().removeClass("active");
-    switch ($(this).html()) {
-    case "Local":
-        socket.close();
-        redrawPeople();
-        createSocket("wss:" + window.location.hostname + ":9000", "Local");
-        break;
-    case "CMU":
-        socket.close();
-        redrawPeople();
-        createSocket("wss://facerec.cmusatyalab.org:9000", "CMU");
-        break;
-    case "AWS East":
-        socket.close();
-        redrawPeople();
-        createSocket("wss://54.159.128.49:9000", "AWS-East");
-        break;
-    case "AWS West":
-        socket.close();
-        redrawPeople();
-        createSocket("wss://54.188.234.61:9000", "AWS-West");
-        break;
-    default:
-        alert("Unrecognized server: " + $(this.html()));
     }
 }

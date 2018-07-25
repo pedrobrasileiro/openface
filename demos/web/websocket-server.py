@@ -51,10 +51,15 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
 import openface
+import subprocess
+import predictor
 
 modelDir = os.path.join(fileDir, '..', '..', 'models')
 dlibModelDir = os.path.join(modelDir, 'dlib')
 openfaceModelDir = os.path.join(modelDir, 'openface')
+capturedImageDir = os.path.join(fileDir, 'captured')
+statisticFile = os.path.join(fileDir, 'captured', 'test', 'statistic.txt')
+
 # For TLS connections
 tls_crt = os.path.join(fileDir, 'tls', 'server.crt')
 tls_key = os.path.join(fileDir, 'tls', 'server.key')
@@ -99,6 +104,10 @@ class OpenFaceServerProtocol(WebSocketServerProtocol):
         self.training = True
         self.people = []
         self.svm = None
+        self.testing = False
+        self.testedTotalImgs = 0
+        self.successImgs = 0
+        self.errorImgs = 0
         if args.unknown:
             self.unknownImgs = np.load("./examples/web/unknown.npy")
 
@@ -112,142 +121,30 @@ class OpenFaceServerProtocol(WebSocketServerProtocol):
     def onMessage(self, payload, isBinary):
         raw = payload.decode('utf8')
         msg = json.loads(raw)
-        print("Received {} message of length {}.".format(
-            msg['type'], len(raw)))
-        if msg['type'] == "ALL_STATE":
-            self.loadState(msg['images'], msg['training'], msg['people'])
-        elif msg['type'] == "NULL":
-            self.sendMessage('{"type": "NULL"}')
-        elif msg['type'] == "FRAME":
-            self.processFrame(msg['dataURL'], msg['identity'])
+        print("Received {} message of length {}.".format(msg['type'], len(raw)))
+        if msg['type'] == "FRAME":
+            self.processFrame(msg['dataURL'], msg['name'])
             self.sendMessage('{"type": "PROCESSED"}')
-        elif msg['type'] == "TRAINING":
-            self.training = msg['val']
-            if not self.training:
-                self.trainSVM()
-        elif msg['type'] == "ADD_PERSON":
-            self.people.append(msg['val'].encode('ascii', 'ignore'))
-            print(self.people)
-        elif msg['type'] == "UPDATE_IDENTITY":
-            h = msg['hash'].encode('ascii', 'ignore')
-            if h in self.images:
-                self.images[h].identity = msg['idx']
-                if not self.training:
-                    self.trainSVM()
-            else:
-                print("Image not found.")
-        elif msg['type'] == "REMOVE_IMAGE":
-            h = msg['hash'].encode('ascii', 'ignore')
-            if h in self.images:
-                del self.images[h]
-                if not self.training:
-                    self.trainSVM()
-            else:
-                print("Image not found.")
-        elif msg['type'] == 'REQ_TSNE':
-            self.sendTSNE(msg['people'])
+        elif msg['type'] == "TEST_FRAME":
+            self.processFrame(msg['dataURL'], msg['name'])
+            self.sendMessage('{"type": "TEST_PROCESSED"}')
+        elif msg['type'] == "TRAIN":
+            self.train()
+        elif msg['type'] == "TEST":
+            self.testing = True
+            self.sendMessage('{"type": "TEST_STARTED"}')
+        elif msg['type'] == "STOP_TEST":
+            self.testing = False
+            self.sendMessage('{"type": "TEST_STOPPED"}')
+        elif msg['type'] == "STAT":
+            self.statistic()
         else:
             print("Warning: Unknown message type: {}".format(msg['type']))
 
     def onClose(self, wasClean, code, reason):
         print("WebSocket connection closed: {0}".format(reason))
 
-    def loadState(self, jsImages, training, jsPeople):
-        self.training = training
-
-        for jsImage in jsImages:
-            h = jsImage['hash'].encode('ascii', 'ignore')
-            self.images[h] = Face(np.array(jsImage['representation']),
-                                  jsImage['identity'])
-
-        for jsPerson in jsPeople:
-            self.people.append(jsPerson.encode('ascii', 'ignore'))
-
-        if not training:
-            self.trainSVM()
-
-    def getData(self):
-        X = []
-        y = []
-        for img in self.images.values():
-            X.append(img.rep)
-            y.append(img.identity)
-
-        numIdentities = len(set(y + [-1])) - 1
-        if numIdentities == 0:
-            return None
-
-        if args.unknown:
-            numUnknown = y.count(-1)
-            numIdentified = len(y) - numUnknown
-            numUnknownAdd = (numIdentified / numIdentities) - numUnknown
-            if numUnknownAdd > 0:
-                print("+ Augmenting with {} unknown images.".format(numUnknownAdd))
-                for rep in self.unknownImgs[:numUnknownAdd]:
-                    # print(rep)
-                    X.append(rep)
-                    y.append(-1)
-
-        X = np.vstack(X)
-        y = np.array(y)
-        return (X, y)
-
-    def sendTSNE(self, people):
-        d = self.getData()
-        if d is None:
-            return
-        else:
-            (X, y) = d
-
-        X_pca = PCA(n_components=50).fit_transform(X, X)
-        tsne = TSNE(n_components=2, init='random', random_state=0)
-        X_r = tsne.fit_transform(X_pca)
-
-        yVals = list(np.unique(y))
-        colors = cm.rainbow(np.linspace(0, 1, len(yVals)))
-
-        # print(yVals)
-
-        plt.figure()
-        for c, i in zip(colors, yVals):
-            name = "Unknown" if i == -1 else people[i]
-            plt.scatter(X_r[y == i, 0], X_r[y == i, 1], c=c, label=name)
-            plt.legend()
-
-        imgdata = StringIO.StringIO()
-        plt.savefig(imgdata, format='png')
-        imgdata.seek(0)
-
-        content = 'data:image/png;base64,' + \
-                  urllib.quote(base64.b64encode(imgdata.buf))
-        msg = {
-            "type": "TSNE_DATA",
-            "content": content
-        }
-        self.sendMessage(json.dumps(msg))
-
-    def trainSVM(self):
-        print("+ Training SVM on {} labeled images.".format(len(self.images)))
-        d = self.getData()
-        if d is None:
-            self.svm = None
-            return
-        else:
-            (X, y) = d
-            numIdentities = len(set(y + [-1]))
-            if numIdentities <= 1:
-                return
-
-            param_grid = [
-                {'C': [1, 10, 100, 1000],
-                 'kernel': ['linear']},
-                {'C': [1, 10, 100, 1000],
-                 'gamma': [0.001, 0.0001],
-                 'kernel': ['rbf']}
-            ]
-            self.svm = GridSearchCV(SVC(C=1), param_grid, cv=5).fit(X, y)
-
-    def processFrame(self, dataURL, identity):
+    def processFrame(self, dataURL, name):
         head = "data:image/jpeg;base64,"
         assert(dataURL.startswith(head))
         imgdata = base64.b64decode(dataURL[len(head):])
@@ -256,108 +153,178 @@ class OpenFaceServerProtocol(WebSocketServerProtocol):
         imgF.seek(0)
         img = Image.open(imgF)
 
-        buf = np.fliplr(np.asarray(img))
-        rgbFrame = np.zeros((300, 400, 3), dtype=np.uint8)
-        rgbFrame[:, :, 0] = buf[:, :, 2]
-        rgbFrame[:, :, 1] = buf[:, :, 1]
-        rgbFrame[:, :, 2] = buf[:, :, 0]
+        if not self.testing:
+            self.save(name, img)
+        else:
+            self.test(name, img)
 
-        if not self.training:
-            annotatedFrame = np.copy(buf)
+    def save(self, name, img):
+        originDir, alignedDir = createCapturedImageDirs(name)
+        number = getLatestImageNumber(originDir) + 1
+        filename = str(number) + ".jpg"
+        img.save(originDir + "/" + filename)
 
-        # cv2.imshow('frame', rgbFrame)
-        # if cv2.waitKey(1) & 0xFF == ord('q'):
-        #     return
+        filepath = "captured/origin/" + name + "/" + filename
+        msg = {
+            "type": "NEW_IMAGE",
+            "name": name,
+            "path": filepath
+        }
+        self.sendMessage(json.dumps(msg))
 
-        identities = []
-        # bbs = align.getAllFaceBoundingBoxes(rgbFrame)
-        bb = align.getLargestFaceBoundingBox(rgbFrame)
-        bbs = [bb] if bb is not None else []
-        for bb in bbs:
-            # print(len(bbs))
-            landmarks = align.findLandmarks(rgbFrame, bb)
-            alignedFace = align.align(args.imgDim, rgbFrame, bb,
-                                      landmarks=landmarks,
-                                      landmarkIndices=openface.AlignDlib.OUTER_EYES_AND_NOSE)
-            if alignedFace is None:
-                continue
+    def test(self, name, img):
+        testdir = createTestImageDir(name)
+        number = getLatestImageNumber(testdir) + 1
+        filename = str(number) + ".jpg"
+        filepath = testdir + "/" + filename
+        img.save(filepath)
 
-            phash = str(imagehash.phash(Image.fromarray(alignedFace)))
-            if phash in self.images:
-                identity = self.images[phash].identity
+        imgpath = "captured/test/" + name + "/" + filename
+        try:
+            predict, confidence = predictor.infer(os.path.join(capturedImageDir, "feature", "classifier.pkl"), filepath)
+
+            if name == predict:
+                predict_result = "predict is correct"
             else:
-                rep = net.forward(alignedFace)
-                # print(rep)
-                if self.training:
-                    self.images[phash] = Face(rep, identity)
-                    # TODO: Transferring as a string is suboptimal.
-                    # content = [str(x) for x in cv2.resize(alignedFace, (0,0),
-                    # fx=0.5, fy=0.5).flatten()]
-                    content = [str(x) for x in alignedFace.flatten()]
-                    msg = {
-                        "type": "NEW_IMAGE",
-                        "hash": phash,
-                        "content": content,
-                        "identity": identity,
-                        "representation": rep.tolist()
-                    }
-                    self.sendMessage(json.dumps(msg))
-                else:
-                    if len(self.people) == 0:
-                        identity = -1
-                    elif len(self.people) == 1:
-                        identity = 0
-                    elif self.svm:
-                        identity = self.svm.predict(rep)[0]
-                    else:
-                        print("hhh")
-                        identity = -1
-                    if identity not in identities:
-                        identities.append(identity)
+                predict_result = "predict is wrong, predict: " + predict + ", actual: " + name
 
-            if not self.training:
-                bl = (bb.left(), bb.bottom())
-                tr = (bb.right(), bb.top())
-                cv2.rectangle(annotatedFrame, bl, tr, color=(153, 255, 204),
-                              thickness=3)
-                for p in openface.AlignDlib.OUTER_EYES_AND_NOSE:
-                    cv2.circle(annotatedFrame, center=landmarks[p], radius=3,
-                               color=(102, 204, 255), thickness=-1)
-                if identity == -1:
-                    if len(self.people) == 1:
-                        name = self.people[0]
-                    else:
-                        name = "Unknown"
-                else:
-                    name = self.people[identity]
-                cv2.putText(annotatedFrame, name, (bb.left(), bb.top() - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.75,
-                            color=(152, 255, 204), thickness=2)
-
-        if not self.training:
+            self.writetofile(name, filepath, predict, confidence, predict_result)
             msg = {
-                "type": "IDENTITIES",
-                "identities": identities
+                "type": "NEW_TEST_IMAGE",
+                "actual_name": name,
+                "predict_name": predict,
+                "predict_result": predict_result,
+                "confidence": confidence,
+                "image": imgpath
+            }
+            self.sendMessage(json.dumps(msg))
+        except predictor.IOException:
+            self.writetofile(name, filepath, "unknown", "unknown", "error: Unable to load image")
+            msg = {
+                "type": "NEW_TEST_IMAGE",
+                "actual_name": name,
+                "predict_name": "unknown",
+                "predict_result": "error: Unable to load image",
+                "confidence": "unknown",
+                "image": imgpath
+            }
+            self.sendMessage(json.dumps(msg))
+        except predictor.NoFaceDetectedException:
+            self.writetofile(name, filepath, "unknown", "unknown", "error: No face is detected from image")
+            msg = {
+                "type": "NEW_TEST_IMAGE",
+                "actual_name": name,
+                "predict_name": "unknown",
+                "predict_result": "error: No face is detected from image",
+                "confidence": "unknown",
+                "image": imgpath
+            }
+            self.sendMessage(json.dumps(msg))
+        except predictor.UnableAlignException:
+            self.writetofile(name, filepath, "unknown", "unknown", "error: Unable to align image")
+            msg = {
+                "type": "NEW_TEST_IMAGE",
+                "actual_name": name,
+                "predict_name": "unknown",
+                "predict_result": "error: Unable to align image",
+                "confidence": "unknown",
+                "image": imgpath
             }
             self.sendMessage(json.dumps(msg))
 
-            plt.figure()
-            plt.imshow(annotatedFrame)
-            plt.xticks([])
-            plt.yticks([])
+    def writetofile(self, name, filepath, predict_name, confidence, predict_result):
+        with open(statisticFile, 'a') as f:
+            line = ','.join((name, filepath, predict_name, str(confidence), predict_result))
+            f.write(line + "\n")
 
-            imgdata = StringIO.StringIO()
-            plt.savefig(imgdata, format='png')
-            imgdata.seek(0)
-            content = 'data:image/png;base64,' + \
-                urllib.quote(base64.b64encode(imgdata.buf))
-            msg = {
-                "type": "ANNOTATED",
-                "content": content
-            }
-            plt.close()
-            self.sendMessage(json.dumps(msg))
+    def train(self):
+        print("Training is started...")
+        command = "sh /root/ylong/workspace/openface/demos/web/train.sh"
+        result = os.system(command)
+        print("Training is completed with return code: ", result)
+        if result == 0:
+            status = "ok"
+        else:
+            status = "nok"
+        msg = {
+            "type": "TRAINED",
+            "status": status
+        }
+        self.sendMessage(json.dumps(msg))
 
+    def predict(self, imgFile, name):
+        command = "sh /root/ylong/workspace/openface/demos/web/train.sh"
+
+    def statistic(self):
+        statResult = {}
+
+        with open(statisticFile, 'r') as f:
+            for line in f:
+                strings = line.split(',')
+                name = strings[0].strip()
+                predict_name = strings[2].strip()
+                if statResult.get(name) is None:
+                    total = 0
+                    success = 0
+                    error = 0
+                else:
+                    total = statResult.get(name).get("total")
+                    success = statResult.get(name).get("success")
+                    error = statResult.get(name).get("error")
+                if predict_name != "unknown":
+                    total += 1
+                    if predict_name == name:
+                        success += 1
+                    else:
+                        error += 1
+                statResult[name] = {"name": name, "total": total, "success": success, "error": error}
+        msg = {
+            "type": "STATED",
+            "statResult": statResult
+        }
+        self.sendMessage(json.dumps(msg))
+
+def createCapturedImageDirs(name):
+    if not os.path.exists(capturedImageDir):
+        os.mkdir(capturedImageDir)
+
+    originDir = os.path.join(capturedImageDir, "origin")
+    alignedDir = os.path.join(capturedImageDir, "aligned")
+    if not os.path.exists(originDir):
+        os.mkdir(originDir)
+    if not os.path.exists(alignedDir):
+        os.mkdir(alignedDir)
+
+    originNameDir = os.path.join(originDir, name)
+    alignedNameDir = os.path.join(alignedDir, name)
+    if not os.path.exists(originNameDir):
+        os.mkdir(originNameDir)
+    if not os.path.exists(alignedNameDir):
+        os.mkdir(alignedNameDir)
+
+    return originNameDir, alignedNameDir
+
+def createTestImageDir(name):
+    if not os.path.exists(capturedImageDir):
+        os.mkdir(capturedImageDir)
+    testDir = os.path.join(capturedImageDir, "test")
+    if not os.path.exists(testDir):
+        os.mkdir(testDir)
+    testNameDir = os.path.join(testDir, name)
+    if not os.path.exists(testNameDir):
+        os.mkdir(testNameDir)
+    return testNameDir
+
+def getLatestImageNumber(dir):
+    numbers = []
+    for path, dirs, files in os.walk(dir):
+        for file in files:
+            filename = os.path.splitext(file)[0]
+            numbers.append(int(filename))
+    if len(numbers) < 1:
+        return 0
+    else:
+        return max(numbers)
 
 def main(reactor):
     log.startLogging(sys.stdout)
