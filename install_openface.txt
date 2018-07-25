@@ -1,0 +1,69 @@
+install openface on ubuntu:
+
+1. 
+install python 2.7
+
+2. 
+install pip2
+sudo apt-get install -y python-pip
+
+3. 
+apt-get update && apt-get install -y build-essential cmake curl gfortran git graphicsmagick libgraphicsmagick1-dev  libavcodec-dev libavformat-dev libboost-all-dev libgtk2.0-dev libjpeg-dev liblapack-dev libswscale-dev pkg-config python-dev python-numpy python-protobuf software-properties-common zip libatlas-base-dev
+
+4. 
+curl -s https://raw.githubusercontent.com/torch/ezinstall/master/install-deps | bash -e
+Note: official ubuntu source list shall be used
+
+6.
+git clone https://github.com/torch/distro.git ~/torch --recursive
+
+7. 
+apt-get install libreadline-dev
+cd ~/torch && ./install.sh
+
+8. 
+git config --global url.https://github.com/.insteadOf git://github.com/
+
+9.
+cd install/bin && ./luarocks install nn && ./luarocks install dpnn && ./luarocks install image && ./luarocks install optim && ./luarocks install csvigo && ./luarocks install torchx && ./luarocks install tds
+
+10. install opencv
+https://docs.opencv.org/2.4/doc/tutorials/introduction/linux_install/linux_install.html
+
+mkdir ~/opcv-tmp
+cd ~/opcv-tmp
+git clone https://github.com/opencv/opencv.git
+cd ~/opcv-tmp/opencv
+mkdir release
+cd release
+cmake -D CMAKE_BUILD_TYPE=RELEASE -D CMAKE_INSTALL_PREFIX=/usr/local ..
+make
+make install
+
+11. install dlib
+cd ~ 
+mkdir -p dlib-tmp
+cd dlib-tmp
+curl -L https://github.com/davisking/dlib/archive/v19.0.tar.gz -o dlib.tar.bz2
+tar xf dlib.tar.bz2
+cd dlib-19.0/python_examples
+mkdir build
+cd build
+cmake ../../tools/python
+cmake --build . --config Release
+cp dlib.so /usr/local/lib/python2.7/dist-packages
+rm -rf ~/dlib-tmp
+
+12. 
+apt-get update && apt-get install -y curl git graphicsmagick libssl-dev libffi-dev python-dev python-pip python-numpy python-nose python-scipy python-pandas python-protobuf python-openssl wget zip
+
+13. 
+git clone https://github.com/cmusatyalab/openface.git 
+cd <path_to_openface> 
+python -m pip install --upgrade --force pip
+./models/get-models.sh
+pip2 install -r requirements.txt
+python2 setup.py install
+pip2 install --user --ignore-installed -r demos/web/requirements.txt
+pip2 install -r training/requirements.txt
+
