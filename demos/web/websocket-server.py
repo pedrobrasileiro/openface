@@ -108,6 +108,7 @@ class OpenFaceServerProtocol(WebSocketServerProtocol):
         self.testedTotalImgs = 0
         self.successImgs = 0
         self.errorImgs = 0
+        self.recognition = False
         if args.unknown:
             self.unknownImgs = np.load("./examples/web/unknown.npy")
 
@@ -121,44 +122,68 @@ class OpenFaceServerProtocol(WebSocketServerProtocol):
     def onMessage(self, payload, isBinary):
         raw = payload.decode('utf8')
         msg = json.loads(raw)
+
         print("Received {} message of length {}.".format(msg['type'], len(raw)))
+
+        # Face training
         if msg['type'] == "FRAME":
             self.processFrame(msg['dataURL'], msg['name'])
             self.sendMessage('{"type": "PROCESSED"}')
-        elif msg['type'] == "TEST_FRAME":
-            self.processFrame(msg['dataURL'], msg['name'])
-            self.sendMessage('{"type": "TEST_PROCESSED"}')
         elif msg['type'] == "TRAIN":
             self.train()
+
+        # Face prediction test
         elif msg['type'] == "TEST":
             self.testing = True
             self.sendMessage('{"type": "TEST_STARTED"}')
+        elif msg['type'] == "TEST_FRAME":
+            self.processTestFrame(msg['dataURL'], msg['name'])
+            self.sendMessage('{"type": "TEST_PROCESSED"}')
         elif msg['type'] == "STOP_TEST":
             self.testing = False
             self.sendMessage('{"type": "TEST_STOPPED"}')
         elif msg['type'] == "STAT":
             self.statistic()
+
+        # Face recognition
+        elif msg['type'] == "RECOGNITION":
+            self.recognition = True
+            self.sendMessage('{"type": "RECOGNITION_STARTED"}')
+        elif msg['type'] == "RECOGNITION_FRAME":
+            self.processRecogFrame(msg['dataURL'])
+            self.sendMessage('{"type": "RECOGNITION_PROCESSED"}')
+        elif msg['type'] == "STOP_RECOGNITION":
+            self.recognition = False
+            self.sendMessage('{"type": "RECOGNITION_STOPPED"}')
         else:
             print("Warning: Unknown message type: {}".format(msg['type']))
 
     def onClose(self, wasClean, code, reason):
         print("WebSocket connection closed: {0}".format(reason))
 
-    def processFrame(self, dataURL, name):
+    def getImg(self, dataURL):
         head = "data:image/jpeg;base64,"
-        assert(dataURL.startswith(head))
+        assert (dataURL.startswith(head))
         imgdata = base64.b64decode(dataURL[len(head):])
         imgF = StringIO.StringIO()
         imgF.write(imgdata)
         imgF.seek(0)
         img = Image.open(imgF)
+        return img
 
-        if not self.testing:
-            self.save(name, img)
-        else:
-            self.test(name, img)
+    def processFrame(self, dataURL, name):
+        img = self.getImg(dataURL)
+        self.saveImg(name, img)
 
-    def save(self, name, img):
+    def processTestFrame(self, dataURL, name):
+        img = self.getImg(dataURL)
+        self.testImg(name, img)
+
+    def processRecogFrame(self, dataURL):
+        img = self.getImg(dataURL)
+        self.recogImg(img)
+
+    def saveImg(self, name, img):
         originDir, alignedDir = createCapturedImageDirs(name)
         number = getLatestImageNumber(originDir) + 1
         filename = str(number) + ".jpg"
@@ -172,7 +197,7 @@ class OpenFaceServerProtocol(WebSocketServerProtocol):
         }
         self.sendMessage(json.dumps(msg))
 
-    def test(self, name, img):
+    def testImg(self, name, img):
         testdir = createTestImageDir(name)
         number = getLatestImageNumber(testdir) + 1
         filename = str(number) + ".jpg"
@@ -210,12 +235,12 @@ class OpenFaceServerProtocol(WebSocketServerProtocol):
             }
             self.sendMessage(json.dumps(msg))
         except predictor.NoFaceDetectedException:
-            self.writetofile(name, filepath, "unknown", "unknown", "error: No face is detected from image")
+            self.writetofile(name, filepath, "unknown", "unknown", "error: No face detected")
             msg = {
                 "type": "NEW_TEST_IMAGE",
                 "actual_name": name,
                 "predict_name": "unknown",
-                "predict_result": "error: No face is detected from image",
+                "predict_result": "error: No face detected",
                 "confidence": "unknown",
                 "image": imgpath
             }
@@ -228,6 +253,52 @@ class OpenFaceServerProtocol(WebSocketServerProtocol):
                 "predict_name": "unknown",
                 "predict_result": "error: Unable to align image",
                 "confidence": "unknown",
+                "image": imgpath
+            }
+            self.sendMessage(json.dumps(msg))
+
+    def recogImg(self, img):
+        recogdir = createRecogImageDir()
+        number = getLatestImageNumber(recogdir) + 1
+        filename = str(number) + ".jpg"
+        filepath = recogdir + "/" + filename
+        img.save(filepath)
+        imgpath = "captured/recognition/" + filename
+
+        try:
+            predict, confidence = predictor.infer(os.path.join(capturedImageDir, "feature", "classifier.pkl"), filepath)
+            msg = {
+                "type": "NEW_RECOGNITION_IMAGE",
+                "predict_name": predict,
+                "confidence": confidence,
+                "predict_result": "success",
+                "image": imgpath
+            }
+            self.sendMessage(json.dumps(msg))
+        except predictor.IOException:
+            msg = {
+                "type": "NEW_RECOGNITION_IMAGE",
+                "predict_name": "unknown",
+                "confidence": "unknown",
+                "predict_result": "IO exception",
+                "image": imgpath
+            }
+            self.sendMessage(json.dumps(msg))
+        except predictor.NoFaceDetectedException:
+            msg = {
+                "type": "NEW_RECOGNITION_IMAGE",
+                "predict_name": "unknown",
+                "confidence": "unknown",
+                "predict_result": "No face detected",
+                "image": imgpath
+            }
+            self.sendMessage(json.dumps(msg))
+        except predictor.UnableAlignException:
+            msg = {
+                "type": "NEW_RECOGNITION_IMAGE",
+                "predict_name": "unknown",
+                "confidence": "unknown",
+                "predict_result": "Unable to align image",
                 "image": imgpath
             }
             self.sendMessage(json.dumps(msg))
@@ -251,9 +322,6 @@ class OpenFaceServerProtocol(WebSocketServerProtocol):
             "status": status
         }
         self.sendMessage(json.dumps(msg))
-
-    def predict(self, imgFile, name):
-        command = "sh /root/ylong/workspace/openface/demos/web/train.sh"
 
     def statistic(self):
         statResult = {}
@@ -314,6 +382,14 @@ def createTestImageDir(name):
     if not os.path.exists(testNameDir):
         os.mkdir(testNameDir)
     return testNameDir
+
+def createRecogImageDir():
+    if not os.path.exists(capturedImageDir):
+        os.mkdir(capturedImageDir)
+    recogDir = os.path.join(capturedImageDir, "recognition")
+    if not os.path.exists(recogDir):
+        os.mkdir(recogDir)
+    return recogDir
 
 def getLatestImageNumber(dir):
     numbers = []

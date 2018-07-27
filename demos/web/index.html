@@ -155,8 +155,23 @@ limitations under the License.
 
                 <!-- Face Recognition -->
                 <div class="tab-pane container fade" id="menu3"><br>
-                    ...
+                    <div class="row">
+                        <div class="col-sm-5">
+                            <h3>Face Recognition:</h3>
+                            <button type="button" class="btn btn-primary" id="startRecognition">Start</button>
+                            <button type="button" class="btn btn-default" id="stopRecognition">Stop</button>
+                            <div class="form-group" id="recogStatus"></div>
+                            <div class="form-group">
+                                <div id="recogResult">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-sm-7" style="text-align: center">
+                            <video id="videoe3" class="video" width="400" height="300" preload="auto" loop></video>
+                        </div>
+                    </div>
                 </div>
+
             </div>
         </div>
     </body>
@@ -176,11 +191,14 @@ limitations under the License.
          vidReady = false, localStream;
      var testVid = document.getElementById('videoe2'),
          testVidReady = false, testLocalStream;
+     var recogVid = document.getElementById('videoe3'),
+         recogVidReady = false, recogLocalStream;
      var peopleTableTmpl = Handlebars.compile($("#peopleTableTmpl").html());
      var defaultTok = 1;
      var images = [];
      var tok = defaultTok;
      var testTok = defaultTok;
+     var recogTok = defaultTok;
      var socket, socketName;
 
      $("#startCapture").click(startCapture);
@@ -189,6 +207,8 @@ limitations under the License.
      $("#startTest").click(startTest);
      $("#stopTest").click(stopTest);
      $("#startStat").click(startStat);
+     $("#startRecognition").click(startRecognition);
+     $("#stopRecognition").click(stopRecognition);
 
      // createSocket("wss://facerec.cmusatyalab.org:9000", "CMU");
      createSocket("wss://" + window.location.hostname + ":9000", "Local");

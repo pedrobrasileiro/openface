@@ -143,6 +143,12 @@ function startTrain() {
     $("#trainStatus").html("Training is ongoing...");
 }
 
+function redrawPeople() {
+    var context = {images: images};
+    $("#peopleTd").html(peopleTableTmpl(context));
+}
+
+//////////////////////// Face prediction test
 function startTest() {
     var name = $("#testName").val();
     if (name == "") {
@@ -217,7 +223,6 @@ function testVideoSucess(stream) {
     setTimeout(function() {requestAnimFrame(sendTestFrameLoop)}, 1000);
 }
 
-
 function sendTestFrameLoop() {
     if (socket == null || socket.readyState != socket.OPEN ||
         !testVidReady) {
@@ -253,11 +258,102 @@ function startStat() {
     socket.send(JSON.stringify(msg));
 }
 
-function redrawPeople() {
-    var context = {images: images};
-    $("#peopleTd").html(peopleTableTmpl(context));
+////////////// Face Recognition
+function startRecognition() {
+    $("#recogStatus").html("Face recognition is starting...");
+
+    var msg = {
+        'type': 'RECOGNITION'
+    };
+    socket.send(JSON.stringify(msg));
 }
 
+function stopRecognition() {
+    $("#recogStatus").html("Face recognition is stopping...");
+    stopRecogCapture();
+    var msg = {
+        'type': 'STOP_RECOGNITION'
+    };
+    socket.send(JSON.stringify(msg));
+}
+
+function startRecogCapture() {
+    $("#recogStatus").html("Face recognition is ongoing...");
+    if (navigator.getUserMedia) {
+         var videoSelector = {video : true};
+         navigator.getUserMedia(videoSelector, recogVideoSucess, function() {
+             alert("Error fetching video from webcam");
+         });
+     } else {
+         alert("No webcam detected.");
+     }
+}
+
+function stopRecogCapture() {
+    recogVid.pause();
+
+    if (recogVid.mozCaptureStream) {
+        recogVid.mozSrcObject = null;
+    } else {
+        recogVid.src = "" || null;
+    }
+
+    if (recogLocalStream) {
+        if (recogLocalStream.getVideoTracks) {
+            // get video track to call stop on it
+            var tracks = recogLocalStream.getVideoTracks();
+            if (tracks && tracks[0] && tracks[0].stop) tracks[0].stop();
+        }
+        else if (recogLocalStream.stop) {
+            // deprecated, may be removed in future
+            recogLocalStream.stop();
+        }
+        recogLocalStream = null;
+    }
+
+    recogVidReady = false;
+}
+
+function recogVideoSucess(stream) {
+    if (recogVid.mozCaptureStream) {
+        recogVid.mozSrcObject = stream;
+    } else {
+        recogVid.src = (window.URL && window.URL.createObjectURL(stream)) ||
+            stream;
+    }
+    recogLocalStream = stream;
+    recogVid.play();
+    recogVidReady = true;
+    setTimeout(function() {requestAnimFrame(sendRecogFrameLoop)}, 1000);
+}
+
+function sendRecogFrameLoop() {
+    if (socket == null || socket.readyState != socket.OPEN ||
+        !recogVidReady) {
+        return;
+    }
+
+    if (recogTok > 0) {
+        var canvas = document.createElement('canvas');
+        canvas.width = recogVid.width;
+        canvas.height = recogVid.height;
+        var cc = canvas.getContext('2d');
+        cc.drawImage(recogVid, 0, 0, recogVid.width, recogVid.height);
+        var apx = cc.getImageData(0, 0, recogVid.width, recogVid.height);
+
+        var dataURL = canvas.toDataURL('image/jpeg', 0.6)
+
+        var msg = {
+            'type': 'RECOGNITION_FRAME',
+            'dataURL': dataURL
+        };
+        socket.send(JSON.stringify(msg));
+        recogTok--;
+    }
+    setTimeout(function() {requestAnimFrame(sendRecogFrameLoop)}, 500);
+}
+
+///////////////// Create web socket
 function createSocket(address, name) {
     socket = new WebSocket(address);
     socketName = name;
@@ -325,7 +421,26 @@ function createSocket(address, name) {
                             "</tr>"
             }
             $("#statBody").html(outHtml);
-        } else {
+        }
+
+        else if (j.type == "RECOGNITION_STARTED") {
+            startRecogCapture();
+        } else if (j.type == "RECOGNITION_PROCESSED") {
+            recogTok++;
+        } else if (j.type == "RECOGNITION_STOPPED") {
+            $("#testStatus").html("Face recognition is stopped.");
+        } else if (j.type == "NEW_RECOGNITION_IMAGE") {
+            var outHtml = '<h4>Face Recognition Result:</h4>';
+            if (j.predict_name != "unknown") {
+                outHtml += '<span style="font-weight: bold">People In Video: </span><span style="color:green">' + j.predict_name + '</span><br>';
+            } else {
+                outHtml += '<span style="font-weight: bold">People In Video: </span><span style="color:red">' + j.predict_name + '</span><br>';
+            }
+
+            $("#recogResult").html(outHtml);
+        }
+
+        else {
             console.log("Unrecognized message type: " + j.type);
         }
     }
