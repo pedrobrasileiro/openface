@@ -114,7 +114,6 @@ function sendFrameLoop() {
     }
 
     if (tok > 0) {
-        console.log("starting to send frame message")
         var canvas = document.createElement('canvas');
         canvas.width = vid.width;
         canvas.height = vid.height;
@@ -146,6 +145,29 @@ function startTrain() {
 function redrawPeople() {
     var context = {images: images};
     $("#peopleTd").html(peopleTableTmpl(context));
+}
+
+function deleteImage(name, image) {
+    var imgIndex = -1;
+    for (var i = 0; i < images.length; i++) {
+        img = images[i];
+        if (img.name == name && img.image == image) {
+            imgIndex = i;
+            break;
+        }
+    }
+    if (imgIndex != -1) {
+        images.splice(imgIndex, 1);
+    }
+
+    var msg = {
+        'type': 'DELETE',
+        'name': name,
+        'image': image
+    };
+    socket.send(JSON.stringify(msg));
+
+    redrawPeople()
 }
 
 //////////////////////// Face prediction test
@@ -362,7 +384,6 @@ function createSocket(address, name) {
         $("#serverStatus").html("Connected to " + name);
     };
     socket.onmessage = function(e) {
-        console.log(e);
         j = JSON.parse(e.data);
         if (j.type == "TRAINED") {
             if (j.status == "ok") {

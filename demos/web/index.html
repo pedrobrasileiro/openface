@@ -98,7 +98,8 @@ limitations under the License.
                             <div style="float: left;margin: 2px;">
                                 <img src="{{this.image}}" height="96px" title="{{this.image}}"/>
                                 <div>
-                                    <span>{{this.name}}</span>
+                                    <span>{{this.name}} </span>
+                                    <button type="button" class="btn btn-sm btn-info" onclick="deleteImage('{{this.name}}', '{{this.image}}')">Delete</button>
                                 </div>
                             </div>
                             {{/each}}

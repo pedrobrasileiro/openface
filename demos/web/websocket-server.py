@@ -131,6 +131,8 @@ class OpenFaceServerProtocol(WebSocketServerProtocol):
             self.sendMessage('{"type": "PROCESSED"}')
         elif msg['type'] == "TRAIN":
             self.train()
+        elif msg['type'] == 'DELETE':
+            self.deleteImage(msg['name'], msg['image'])
 
         # Face prediction test
         elif msg['type'] == "TEST":
@@ -161,6 +163,13 @@ class OpenFaceServerProtocol(WebSocketServerProtocol):
     def onClose(self, wasClean, code, reason):
         print("WebSocket connection closed: {0}".format(reason))
 
+    def deleteImage(self, name, image):
+        originDir = getOriginDir(name)
+        filename = os.path.basename(image)
+        filepath = os.path.join(originDir, filename)
+        if os.path.exists(filepath):
+            os.remove(filepath)
+
     def getImg(self, dataURL):
         head = "data:image/jpeg;base64,"
         assert (dataURL.startswith(head))
@@ -184,7 +193,7 @@ class OpenFaceServerProtocol(WebSocketServerProtocol):
         self.recogImg(img)
 
     def saveImg(self, name, img):
-        originDir, alignedDir = createCapturedImageDirs(name)
+        originDir = getOriginDir(name)
         number = getLatestImageNumber(originDir) + 1
         filename = str(number) + ".jpg"
         img.save(originDir + "/" + filename)
@@ -198,7 +207,7 @@ class OpenFaceServerProtocol(WebSocketServerProtocol):
         self.sendMessage(json.dumps(msg))
 
     def testImg(self, name, img):
-        testdir = createTestImageDir(name)
+        testdir = getTestDir(name)
         number = getLatestImageNumber(testdir) + 1
         filename = str(number) + ".jpg"
         filepath = testdir + "/" + filename
@@ -258,7 +267,7 @@ class OpenFaceServerProtocol(WebSocketServerProtocol):
             self.sendMessage(json.dumps(msg))
 
     def recogImg(self, img):
-        recogdir = createRecogImageDir()
+        recogdir = getRecogDir()
         number = getLatestImageNumber(recogdir) + 1
         filename = str(number) + ".jpg"
         filepath = recogdir + "/" + filename
@@ -352,27 +361,35 @@ class OpenFaceServerProtocol(WebSocketServerProtocol):
         }
         self.sendMessage(json.dumps(msg))
 
-def createCapturedImageDirs(name):
+def getOriginDir(name):
     if not os.path.exists(capturedImageDir):
         os.mkdir(capturedImageDir)
 
     originDir = os.path.join(capturedImageDir, "origin")
-    alignedDir = os.path.join(capturedImageDir, "aligned")
     if not os.path.exists(originDir):
         os.mkdir(originDir)
+
+    originNameDir = os.path.join(originDir, name)
+    if not os.path.exists(originNameDir):
+        os.mkdir(originNameDir)
+
+    return originNameDir
+
+def getAlignedDir(name):
+    if not os.path.exists(capturedImageDir):
+        os.mkdir(capturedImageDir)
+
+    alignedDir = os.path.join(capturedImageDir, "aligned")
     if not os.path.exists(alignedDir):
         os.mkdir(alignedDir)
 
-    originNameDir = os.path.join(originDir, name)
     alignedNameDir = os.path.join(alignedDir, name)
-    if not os.path.exists(originNameDir):
-        os.mkdir(originNameDir)
     if not os.path.exists(alignedNameDir):
         os.mkdir(alignedNameDir)
 
-    return originNameDir, alignedNameDir
+    return alignedNameDir
 
-def createTestImageDir(name):
+def getTestDir(name):
     if not os.path.exists(capturedImageDir):
         os.mkdir(capturedImageDir)
     testDir = os.path.join(capturedImageDir, "test")
@@ -383,7 +400,7 @@ def createTestImageDir(name):
         os.mkdir(testNameDir)
     return testNameDir
 
-def createRecogImageDir():
+def getRecogDir():
     if not os.path.exists(capturedImageDir):
         os.mkdir(capturedImageDir)
     recogDir = os.path.join(capturedImageDir, "recognition")
