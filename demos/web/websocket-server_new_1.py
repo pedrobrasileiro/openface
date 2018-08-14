@@ -30,39 +30,35 @@ from twisted.internet.ssl import DefaultOpenSSLContextFactory
 from twisted.python import log
 
 import argparse
+import cv2
+import imagehash
 import json
 from PIL import Image
 import numpy as np
 import os
 import StringIO
+import urllib
 import base64
+
+from sklearn.decomposition import PCA
+from sklearn.grid_search import GridSearchCV
+from sklearn.manifold import TSNE
+from sklearn.svm import SVC
 
 import matplotlib as mpl
 mpl.use('Agg')
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 
 import openface
+import subprocess
 import predictor
-
-import pickle
-
-import pandas as pd
-import operator
-from sklearn.pipeline import Pipeline
-from sklearn.lda import LDA
-from sklearn.preprocessing import LabelEncoder
-from sklearn.svm import SVC
-from sklearn.grid_search import GridSearchCV
-from sklearn.mixture import GMM
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.naive_bayes import GaussianNB
-from nolearn.dbn import DBN
 
 modelDir = os.path.join(fileDir, '..', '..', 'models')
 dlibModelDir = os.path.join(modelDir, 'dlib')
 openfaceModelDir = os.path.join(modelDir, 'openface')
 capturedImageDir = os.path.join(fileDir, 'captured')
 statisticFile = os.path.join(fileDir, 'captured', 'test', 'statistic.txt')
-repDir = os.path.join(fileDir, 'representation')
 
 # For TLS connections
 tls_crt = os.path.join(fileDir, 'tls', 'server.crt')
@@ -86,37 +82,6 @@ args = parser.parse_args()
 align = openface.AlignDlib(args.dlibFacePredictor)
 net = openface.TorchNeuralNet(args.networkModel, imgDim=args.imgDim,
                               cuda=args.cuda)
-
-
-repDir = os.path.join(fileDir, 'representation')
-if not os.path.exists(repDir):
-    os.mkdir(repDir)
-
-labels = np.array([])
-labelsCsv = os.path.join(repDir, 'labels.csv')
-if os.path.exists(labelsCsv):
-    labels = pd.read_csv(labelsCsv, header=None).as_matrix()[:, 0]
-    labels = map(operator.itemgetter(1),
-                 map(os.path.split,
-                     map(os.path.dirname, labels)))  # Get the directory.
-
-embeddings = np.array([])
-repsCsv = os.path.join(repDir, 'reps.csv')
-if os.path.exists(repsCsv):
-    embeddings = pd.read_csv(repsCsv, header=None).as_matrix()
-
-
-le = None
-clf = None
-classifierModel = os.path.join(repDir, 'classifier.pkl')
-if os.path.exists(classifierModel):
-    with open(classifierModel, 'rb') as f:
-        if sys.version_info[0] < 3:
-            (le, clf) = pickle.load(f)
-        else:
-            (le, clf) = pickle.load(f, encoding='latin1')
-
-
 
 
 class Face:
@@ -217,7 +182,7 @@ class OpenFaceServerProtocol(WebSocketServerProtocol):
 
     def processFrame(self, dataURL, name):
         img = self.getImg(dataURL)
-        self.saveImage(name, img)
+        self.saveImg(name, img)
 
     def processTestFrame(self, dataURL, name):
         img = self.getImg(dataURL)
@@ -227,72 +192,19 @@ class OpenFaceServerProtocol(WebSocketServerProtocol):
         img = self.getImg(dataURL)
         self.recogImg(img)
 
-    def saveImageToFile(self, name, img):
+    def saveImg(self, name, img):
         originDir = getOriginDir(name)
         number = getLatestImageNumber(originDir) + 1
         filename = str(number) + ".jpg"
         img.save(originDir + "/" + filename)
 
-    def saveImage(self, name, img):
-        self.saveImageToFile(name, img)
-
-        buf = np.fliplr(np.asarray(img))
-        rgbFrame = np.zeros((300, 400, 3), dtype=np.uint8)
-        rgbFrame[:, :, 0] = buf[:, :, 2]
-        rgbFrame[:, :, 1] = buf[:, :, 1]
-        rgbFrame[:, :, 2] = buf[:, :, 0]
-
-        bb = align.getLargestFaceBoundingBox(rgbFrame)
-        if bb is None:
-            return
-
-        landmarks = align.findLandmarks(rgbFrame, bb)
-        alignedFace = align.align(args.imgDim, rgbFrame, bb,
-                                  landmarks=landmarks,
-                                  landmarkIndices=openface.AlignDlib.OUTER_EYES_AND_NOSE)
-
-        if alignedFace is None:
-            return
-
-        rep = net.forward(alignedFace)
-
-        global labels
-        tmp = np.append(labels, name)
-        labels = tmp
-        print(labels)
-
-        global embeddings
-        tmp = np.append(embeddings, [rep], axis=0)
-        embeddings = tmp
-        print(embeddings)
-
-        self.saveRepToFile(rep, name)
-
-        self.sendImage(alignedFace, name)
-
-    def sendImage(self, alignedFace, name):
-        content = [str(x) for x in alignedFace.flatten()]
+        filepath = "captured/origin/" + name + "/" + filename
         msg = {
-            "type": "NEW_ALIGNED_IMAGE",
-            "content": content,
-            "name": name
+            "type": "NEW_IMAGE",
+            "name": name,
+            "path": filepath
         }
         self.sendMessage(json.dumps(msg))
-
-    def saveRepToFile(self, rep, name):
-        repDir = getRepDir()
-        labelFile = os.path.join(repDir, 'labels.csv')
-        repFile = os.path.join(repDir, 'reps.csv')
-
-        lf = open(labelFile, 'a')
-        lf.write(name + '\n')
-
-        rf = open(repFile, 'a')
-        repstrlist = [str(r) for r in rep]
-        rf.write(','.join(repstrlist) + '\n')
-
-        lf.close()
-        rf.close()
 
     def testImg(self, name, img):
         testdir = getTestDir(name)
@@ -355,19 +267,6 @@ class OpenFaceServerProtocol(WebSocketServerProtocol):
             self.sendMessage(json.dumps(msg))
 
     def recogImg(self, img):
-        predict, confidence = self.infer(img)
-        self.sendRecogStatus(predict, confidence)
-
-    def sendRecogStatus(self, predict, confidence):
-        msg = {
-            "type": "NEW_RECOGNITION_IMAGE",
-            "predict_name": predict,
-            "confidence": confidence,
-            "predict_result": "success"
-        }
-        self.sendMessage(json.dumps(msg))
-
-    def recogImg0(self, img):
         recogdir = getRecogDir()
         number = getLatestImageNumber(recogdir) + 1
         filename = str(number) + ".jpg"
@@ -418,130 +317,20 @@ class OpenFaceServerProtocol(WebSocketServerProtocol):
             line = ','.join((name, filepath, predict_name, str(confidence), predict_result))
             f.write(line + "\n")
 
-    def train(self, classifier='LinearSvm', ldaDim=1):
-        # print("Loading embeddings.")
-        # fname = "{}/labels.csv".format(getRepDir())
-        # labels = pd.read_csv(fname, header=None).as_matrix()[:, 0]
-        # labels = map(operator.itemgetter(1),
-        #              map(os.path.split,
-        #                  map(os.path.dirname, labels)))  # Get the directory.
-        # fname = "{}/reps.csv".format(getRepDir())
-        # embeddings = pd.read_csv(fname, header=None).as_matrix()
-
-        global le
-        global clf
-
-        le = LabelEncoder().fit(labels)
-        labelsNum = le.transform(labels)
-        nClasses = len(le.classes_)
-        print("Training for {} classes.".format(nClasses))
-
-        if classifier == 'LinearSvm':
-            clf = SVC(C=1, kernel='linear', probability=True)
-        elif classifier == 'GridSearchSvm':
-            print("""
-            Warning: In our experiences, using a grid search over SVM hyper-parameters only
-            gives marginally better performance than a linear SVM with C=1 and
-            is not worth the extra computations of performing a grid search.
-            """)
-            param_grid = [
-                {'C': [1, 10, 100, 1000],
-                 'kernel': ['linear']},
-                {'C': [1, 10, 100, 1000],
-                 'gamma': [0.001, 0.0001],
-                 'kernel': ['rbf']}
-            ]
-            clf = GridSearchCV(SVC(C=1, probability=True), param_grid, cv=5)
-        elif classifier == 'GMM':  # Doesn't work best
-            clf = GMM(n_components=nClasses)
-
-        # ref:
-        # http://scikit-learn.org/stable/auto_examples/classification/plot_classifier_comparison.html#example-classification-plot-classifier-comparison-py
-        elif classifier == 'RadialSvm':  # Radial Basis Function kernel
-            # works better with C = 1 and gamma = 2
-            clf = SVC(C=1, kernel='rbf', probability=True, gamma=2)
-        elif classifier == 'DecisionTree':  # Doesn't work best
-            clf = DecisionTreeClassifier(max_depth=20)
-        elif classifier == 'GaussianNB':
-            clf = GaussianNB()
-
-        # ref: https://jessesw.com/Deep-Learning/
-        elif classifier == 'DBN':
-            clf = DBN([embeddings.shape[1], 500, labelsNum[-1:][0] + 1],  # i/p nodes, hidden nodes, o/p nodes
-                      learn_rates=0.3,
-                      # Smaller steps mean a possibly more accurate result, but the
-                      # training will take longer
-                      learn_rate_decays=0.9,
-                      # a factor the initial learning rate will be multiplied by
-                      # after each iteration of the training
-                      epochs=300,  # no of iternation
-                      # dropouts = 0.25, # Express the percentage of nodes that
-                      # will be randomly dropped as a decimal.
-                      verbose=1)
-
-        if ldaDim > 0:
-            clf_final = clf
-            clf = Pipeline([('lda', LDA(n_components=ldaDim)),
-                            ('clf', clf_final)])
-
-        clf.fit(embeddings, labelsNum)
-
-        self.saveModel(le, clf)
-
-        self.sendTrainStatus("ok")
-
-    def saveModel(self, le, clf):
-        fName = "{}/classifier.pkl".format(getRepDir())
-        print("Saving classifier to '{}'".format(fName))
-        with open(fName, 'w') as f:
-            pickle.dump((le, clf), f)
-
-    def sendTrainStatus(self, status):
+    def train(self):
+        print("Training is started...")
+        command = "sh /root/ylong/workspace/openface/demos/web/train.sh"
+        result = os.system(command)
+        print("Training is completed with return code: ", result)
+        if result == 0:
+            status = "ok"
+        else:
+            status = "nok"
         msg = {
             "type": "TRAINED",
             "status": status
         }
         self.sendMessage(json.dumps(msg))
-
-    def getRep(self, rgbImg, multiple=False):
-        if multiple:
-            bbs = align.getAllFaceBoundingBoxes(rgbImg)
-        else:
-            bb1 = align.getLargestFaceBoundingBox(rgbImg)
-            bbs = [bb1]
-        if len(bbs) == 0 or (not multiple and bb1 is None):
-            raise NoFaceDetectedException("Unable to find a face")
-
-        reps = []
-        for bb in bbs:
-            alignedFace = align.align(
-                args.imgDim,
-                rgbImg,
-                bb,
-                landmarkIndices=openface.AlignDlib.OUTER_EYES_AND_NOSE)
-            if alignedFace is None:
-                raise UnableAlignException("Unable to align face")
-
-            rep = net.forward(alignedFace)
-            reps.append((bb.center().x, rep))
-        sreps = sorted(reps, key=lambda x: x[0])
-        return sreps
-
-    def infer(self, img):
-        reps = self.getRep(img)
-        if len(reps) > 1:
-            print("List of faces in image from left to right")
-        for r in reps:
-            rep = r[1].reshape(1, -1)
-            predictions = clf.predict_proba(rep).ravel()
-            maxI = np.argmax(predictions)
-            person = le.inverse_transform(maxI)
-            confidence = predictions[maxI]
-            print("Predict {} with {:.2f} confidence.".format(person.decode('utf-8'), confidence))
-            if isinstance(clf, GMM):
-                dist = np.linalg.norm(rep - clf.means_[maxI])
-                print("  + Distance from the mean: {}".format(dist))
-        return person, confidence
 
     def statistic(self):
         statResult = {}
@@ -571,18 +360,6 @@ class OpenFaceServerProtocol(WebSocketServerProtocol):
             "statResult": statResult
         }
         self.sendMessage(json.dumps(msg))
-
-class IOException(Exception):
-    def __init__(self, arg):
-        self.args = arg
-
-class NoFaceDetectedException(Exception):
-    def __init__(self, arg):
-        self.args = arg
-
-class UnableAlignException(Exception):
-    def __init__(self, arg):
-        self.args = arg
 
 def getOriginDir(name):
     if not os.path.exists(capturedImageDir):
@@ -630,11 +407,6 @@ def getRecogDir():
     if not os.path.exists(recogDir):
         os.mkdir(recogDir)
     return recogDir
-
-def getRepDir():
-    if not os.path.exists(repDir):
-        os.mkdir(repDir)
-    return repDir
 
 def getLatestImageNumber(dir):
     numbers = []

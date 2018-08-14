@@ -375,6 +375,29 @@ function sendRecogFrameLoop() {
     setTimeout(function() {requestAnimFrame(sendRecogFrameLoop)}, 500);
 }
 
+function getDataURLFromRGB(rgb) {
+    var rgbLen = rgb.length;
+
+    var canvas = $('<canvas/>').width(96).height(96)[0];
+    var ctx = canvas.getContext("2d");
+    var imageData = ctx.createImageData(96, 96);
+    var data = imageData.data;
+    var dLen = data.length;
+    var i = 0, t = 0;
+
+    for (; i < dLen; i +=4) {
+        data[i] = rgb[t+2];
+        data[i+1] = rgb[t+1];
+        data[i+2] = rgb[t];
+        data[i+3] = 255;
+        t += 3;
+    }
+    ctx.putImageData(imageData, 0, 0);
+
+    return canvas.toDataURL("image/png");
+}
+
+
 ///////////////// Create web socket
 function createSocket(address, name) {
     socket = new WebSocket(address);
@@ -397,6 +420,12 @@ function createSocket(address, name) {
             images.push({
                 name: j.name,
                 image: j.path
+            });
+            redrawPeople();
+        } else if (j.type == "NEW_ALIGNED_IMAGE") {
+            images.push({
+                name: j.name,
+                image: getDataURLFromRGB(j.content)
             });
             redrawPeople();
         } else if (j.type == "TEST_STARTED") {
