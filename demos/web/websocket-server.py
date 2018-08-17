@@ -36,6 +36,9 @@ import numpy as np
 import os
 import StringIO
 import base64
+import cv2
+import matplotlib.pyplot as plt
+import urllib
 
 import matplotlib as mpl
 mpl.use('Agg')
@@ -95,14 +98,14 @@ if not os.path.exists(repDir):
 labels = np.array([])
 labelsCsv = os.path.join(repDir, 'labels.csv')
 if os.path.exists(labelsCsv):
-    labels = pd.read_csv(labelsCsv, header=None).as_matrix()[:, 0]
-    labels = map(operator.itemgetter(1),
-                 map(os.path.split,
-                     map(os.path.dirname, labels)))  # Get the directory.
+    print("Loading '{}'".format(labelsCsv))
+    tmp = pd.read_csv(labelsCsv, header=None).as_matrix()[:, 0]
+    labels = list(tmp)
 
 embeddings = np.array([])
 repsCsv = os.path.join(repDir, 'reps.csv')
 if os.path.exists(repsCsv):
+    print("Loading '{}'".format(repsCsv))
     embeddings = pd.read_csv(repsCsv, header=None).as_matrix()
 
 
@@ -110,6 +113,7 @@ le = None
 clf = None
 classifierModel = os.path.join(repDir, 'classifier.pkl')
 if os.path.exists(classifierModel):
+    print("Loading '{}'".format(classifierModel))
     with open(classifierModel, 'rb') as f:
         if sys.version_info[0] < 3:
             (le, clf) = pickle.load(f)
@@ -242,6 +246,8 @@ class OpenFaceServerProtocol(WebSocketServerProtocol):
         rgbFrame[:, :, 1] = buf[:, :, 1]
         rgbFrame[:, :, 2] = buf[:, :, 0]
 
+        annotatedFrame = np.copy(buf)
+
         bb = align.getLargestFaceBoundingBox(rgbFrame)
         if bb is None:
             return
@@ -258,19 +264,41 @@ class OpenFaceServerProtocol(WebSocketServerProtocol):
 
         global labels
         tmp = np.append(labels, name)
-        labels = tmp
-        print(labels)
+        labels = list(tmp)
 
         global embeddings
         tmp = np.append(embeddings, [rep], axis=0)
         embeddings = tmp
-        print(embeddings)
 
         self.saveRepToFile(rep, name)
 
-        self.sendImage(alignedFace, name)
+        bl = (bb.left(), bb.bottom())
+        tr = (bb.right(), bb.top())
+        cv2.rectangle(annotatedFrame, bl, tr, color=(255, 255, 255),
+                      thickness=1)
+        self.sendImage(annotatedFrame, name)
 
-    def sendImage(self, alignedFace, name):
+    def sendImage(self, frame, name):
+        plt.figure()
+        plt.imshow(frame)
+        plt.xticks([])
+        plt.yticks([])
+
+        imgdata = StringIO.StringIO()
+        plt.savefig(imgdata, format='png')
+        imgdata.seek(0)
+        content = 'data:image/png;base64,' + \
+                  urllib.quote(base64.b64encode(imgdata.buf))
+
+        msg = {
+            "type": "NEW_ALIGNED_IMAGE",
+            "content": content,
+            "name": name
+        }
+        plt.close()
+        self.sendMessage(json.dumps(msg))
+
+    def sendAlignedImage(self, alignedFace, name):
         content = [str(x) for x in alignedFace.flatten()]
         msg = {
             "type": "NEW_ALIGNED_IMAGE",
@@ -355,15 +383,24 @@ class OpenFaceServerProtocol(WebSocketServerProtocol):
             self.sendMessage(json.dumps(msg))
 
     def recogImg(self, img):
-        predict, confidence = self.infer(img)
-        self.sendRecogStatus(predict, confidence)
+        buf = np.fliplr(np.asarray(img))
+        rgbFrame = np.zeros((300, 400, 3), dtype=np.uint8)
+        rgbFrame[:, :, 0] = buf[:, :, 2]
+        rgbFrame[:, :, 1] = buf[:, :, 1]
+        rgbFrame[:, :, 2] = buf[:, :, 0]
 
-    def sendRecogStatus(self, predict, confidence):
+        try:
+            predict, confidence = self.infer(rgbFrame)
+            self.sendRecogStatus(predict, confidence, "success")
+        except Exception, e:
+            self.sendRecogStatus("unknown", "unknown", e.message)
+
+    def sendRecogStatus(self, predict, confidence, result):
         msg = {
             "type": "NEW_RECOGNITION_IMAGE",
             "predict_name": predict,
             "confidence": confidence,
-            "predict_result": "success"
+            "predict_result": result
         }
         self.sendMessage(json.dumps(msg))
 
@@ -527,8 +564,8 @@ class OpenFaceServerProtocol(WebSocketServerProtocol):
         sreps = sorted(reps, key=lambda x: x[0])
         return sreps
 
-    def infer(self, img):
-        reps = self.getRep(img)
+    def infer(self, rgbImg):
+        reps = self.getRep(rgbImg)
         if len(reps) > 1:
             print("List of faces in image from left to right")
         for r in reps:

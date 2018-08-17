@@ -425,7 +425,7 @@ function createSocket(address, name) {
         } else if (j.type == "NEW_ALIGNED_IMAGE") {
             images.push({
                 name: j.name,
-                image: getDataURLFromRGB(j.content)
+                image: j.content
             });
             redrawPeople();
         } else if (j.type == "TEST_STARTED") {
@@ -478,7 +478,7 @@ function createSocket(address, name) {
         } else if (j.type == "RECOGNITION_PROCESSED") {
             recogTok++;
         } else if (j.type == "RECOGNITION_STOPPED") {
-            $("#testStatus").html("Face recognition is stopped.");
+            $("#recogStatus").html("Face recognition is stopped.");
         } else if (j.type == "NEW_RECOGNITION_IMAGE") {
             var outHtml = '<h4>Face Recognition Result:</h4>';
             if (j.predict_name != "unknown") {
