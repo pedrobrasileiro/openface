@@ -2,10 +2,12 @@ version: '3.1'
 
 services:
   server:
-    image: pedrobrasileiro/openface:0.2
+    image: pedrobrasileiro/openface:0.3
     build:
       context: .
     restart: unless-stopped
     ports:
       - "8000:8000"
       - "9000:9000"
+    volumes:
+      - /etc/letsencrypt/live/arroz.cf:./tls

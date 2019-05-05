@@ -25,7 +25,9 @@ txaio.use_twisted()
 from autobahn.twisted.websocket import WebSocketServerProtocol, \
     WebSocketServerFactory
 from twisted.internet import task, defer
-from twisted.internet.ssl import DefaultOpenSSLContextFactory
+# from twisted.internet.ssl import DefaultOpenSSLContextFactory
+from OpenSSL import crypto
+from twisted.internet import ssl
 
 from twisted.python import log
 
@@ -68,8 +70,8 @@ statisticFile = os.path.join(fileDir, 'captured', 'test', 'statistic.txt')
 repDir = os.path.join(fileDir, 'representation')
 
 # For TLS connections
-tls_crt = os.path.join(fileDir, 'tls', 'server.crt')
-tls_key = os.path.join(fileDir, 'tls', 'server.key')
+# tls_crt = os.path.join(fileDir, 'tls', 'server.crt')
+# tls_key = os.path.join(fileDir, 'tls', 'server.key')
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--dlibFacePredictor', type=str, help="Path to dlib's face predictor.",
@@ -688,9 +690,22 @@ def main(reactor):
     log.startLogging(sys.stdout)
     factory = WebSocketServerFactory()
     factory.protocol = OpenFaceServerProtocol
-    ctx_factory = DefaultOpenSSLContextFactory(tls_key, tls_crt)
-    # reactor.listenSSL(args.port, factory, ctx_factory)
-    reactor.listenSSL(args.port, factory)
+    # ctx_factory = DefaultOpenSSLContextFactory(tls_key, tls_crt)
+
+    privkey = os.path.join(fileDir, '..', '..', 'tls', 'privkey.pem')
+    cert = os.path.join(fileDir, '..', '..', 'tls', 'cert.pem')
+    chain = os.path.join(fileDir, '..', '..', 'tls', 'chain.pem')
+
+    privkey=open(privkey, 'rt').read()
+    certif=open(cert, 'rt').read()
+    chain=open(chain, 'rt').read()
+
+    privkeypyssl=crypto.load_privatekey(crypto.FILETYPE_PEM,privkey)
+    certifpyssl=crypto.load_certificate(crypto.FILETYPE_PEM,certif)
+    chainpyssl=[crypto.load_certificate(crypto.FILETYPE_PEM,chain)]
+    ctx_factory = ssl.CertificateOptions(privateKey=privkeypyssl,certificate=certifpyssl,extraCertChain=chainpyssl)
+
+    reactor.listenSSL(args.port, factory, ctx_factory)
     return defer.Deferred()
 
 if __name__ == '__main__':
