@@ -690,7 +690,7 @@ def main(reactor):
     factory.protocol = OpenFaceServerProtocol
     ctx_factory = DefaultOpenSSLContextFactory(tls_key, tls_crt)
     # reactor.listenSSL(args.port, factory, ctx_factory)
-    # reactor.listenSSL(args.port, factory)
+    reactor.listenSSL(args.port, factory)
     return defer.Deferred()
 
 if __name__ == '__main__':
